@@ -45,8 +45,8 @@ folder_name = "faiss_index"
 vectorstore_path = os.path.join(base_directory, folder_name)
 
 ### SET THE APPLICATION RUN TYPE
-#app_type = 'dev'
-app_type = 'prod'
+app_type = 'dev'
+#app_type = 'prod'
 
 # SET THE PAGE CONFIGURATION (PAGE TITLE, PAGE ICON)
 functions.render_page_config(base_directory)
