@@ -81,6 +81,19 @@ def rerank_documents(documents, query, top_k=5):
         return []
     
     try:
+        import urllib.request
+        import json
+        import os
+        import ssl
+        
+        # Allow self-signed HTTPS certificates if needed
+        def allowSelfSignedHttps(allowed):
+            # bypass the server certificate verification on client side
+            if allowed and not os.environ.get('PYTHONHTTPSVERIFY', '') and getattr(ssl, '_create_unverified_context', None):
+                ssl._create_default_https_context = ssl._create_unverified_context
+        
+        allowSelfSignedHttps(True)
+        
         # Prepare the payload for the Azure Cohere rerank API
         payload = {
             "documents": [doc.page_content for doc in documents],
@@ -89,30 +102,36 @@ def rerank_documents(documents, query, top_k=5):
             "model": AZURE_COHERE_RERANK_DEPLOYMENT
         }
         
-        # Set up the headers with the API key
+        # Convert the payload to bytes
+        body = str.encode(json.dumps(payload))
+        
+        # Set the URL for the rerank endpoint
+        url = f"{AZURE_COHERE_RERANK_ENDPOINT}/v1/rerank"
+        
+        # Set up headers with the API key
         headers = {
-            "Content-Type": "application/json",
-            "api-key": AZURE_COHERE_RERANK_KEY,
+            'Content-Type': 'application/json', 
+            'Authorization': f'Bearer {AZURE_COHERE_RERANK_KEY}'
         }
         
-        # Make the API call to the Azure Cohere rerank endpoint
-        response = requests.post(
-            f"{AZURE_COHERE_RERANK_ENDPOINT}/rerank",
-            headers=headers,
-            json=payload
-        )
+        # Create the request
+        req = urllib.request.Request(url, body, headers)
         
-        # Check if the request was successful
-        response.raise_for_status()
-        result = response.json()
+        # Make the API call
+        response = urllib.request.urlopen(req)
+        result = response.read()
         
-        # Get the reranked indices and relevance scores
-        reranked_indices = [item["index"] for item in result["results"]]
+        # Parse the response
+        result_json = json.loads(result)
+        
+        # Extract the reranked indices
+        reranked_indices = [item["index"] for item in result_json["results"]]
         
         # Reorder the documents based on the reranked indices
         reranked_documents = [documents[idx] for idx in reranked_indices]
         
         return reranked_documents
+        
     except Exception as e:
         print(f"Error during reranking: {str(e)}")
         # Fallback to original documents if reranking fails

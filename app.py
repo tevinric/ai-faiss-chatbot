@@ -152,14 +152,41 @@ Your goal is to be accurate, helpful, and transparent about where information co
     )
 
     # Create a custom retrieval function with reranking
-    def retrieve_and_rerank(query):
+def retrieve_and_rerank(query):
+    """
+    Retrieves documents using FAISS vector search and then applies reranking 
+    using the Cohere rerank model to improve relevance.
+    
+    Args:
+        query: The user's query string
+    
+    Returns:
+        A list of reranked Document objects
+    """
+    try:
         # First get documents using the standard FAISS retriever
         initial_docs = retriever.get_relevant_documents(query)
+        
+        if not initial_docs:
+            logger.warning(f"No documents found for query: {query}")
+            return []
+        
+        logger.info(f"Retrieved {len(initial_docs)} initial documents, applying reranking")
         
         # Apply reranking to these documents
         reranked_docs = config.rerank_documents(initial_docs, query, top_k=5)
         
+        logger.info(f"Reranking complete, returning {len(reranked_docs)} documents")
         return reranked_docs
+    
+    except Exception as e:
+        logger.error(f"Error in retrieve_and_rerank: {str(e)}")
+        # Fallback to original retrieval if reranking fails
+        try:
+            return retriever.get_relevant_documents(query)[:5]
+        except Exception as retrieval_error:
+            logger.error(f"Fallback retrieval also failed: {str(retrieval_error)}")
+            return []
 
     # Create a custom retrieval chain that uses our reranking function
     def format_docs(docs):
