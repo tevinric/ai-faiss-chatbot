@@ -21,7 +21,6 @@ from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from streamlit_modal import Modal
-from langchain.schema.runnable import RunnablePassthrough
 
 #from login_ui import login_ui
 import config
@@ -95,7 +94,7 @@ def get_vectorstore(bot_type_selected):
 
 # Get retrieval chain with caching - updated for safe but accurate source focus
 def get_retrieval_chain(bot_type_selected):
-    """Get cached retrieval chain for specific bot type with accurate source representation and reranking"""
+    """Get cached retrieval chain for specific bot type with accurate source representation"""
     if bot_type_selected in CHAIN_CACHE:
         return CHAIN_CACHE[bot_type_selected]
     
@@ -145,60 +144,19 @@ Your goal is to be accurate, helpful, and transparent about where information co
             prompt_template,
         )
         
-        # Set up retriever with increased number of chunks for initial retrieval
+        # Set up retriever with good default settings
         retriever = vectorstore.as_retriever(
             search_kwargs={
-                "k": 10,       # Retrieve more chunks for reranking
-                "fetch_k": 20  # Consider more candidates
+                "k": 5,        # Retrieve 5 chunks
+                "fetch_k": 10   # Consider 10 candidates
             }
         )
 
-        # Create a more robust retrieve_and_rerank function
-        def retrieve_and_rerank(query):
-            """Retrieve documents and rerank them for improved relevance"""
-            try:
-                # First get documents using the standard FAISS retriever
-                initial_docs = retriever.get_relevant_documents(query)
-                
-                # Log the retrieval success
-                logger.info(f"Retrieved {len(initial_docs)} documents from FAISS")
-                
-                # If we got documents from FAISS, try to rerank them
-                if initial_docs:
-                    try:
-                        # Apply reranking to these documents
-                        reranked_docs = config.rerank_documents(initial_docs, query, top_k=5)
-                        
-                        # If reranking was successful, return the reranked docs
-                        if reranked_docs:
-                            logger.info(f"Successfully reranked documents, returning {len(reranked_docs)} documents")
-                            return reranked_docs
-                        else:
-                            # Fallback if reranking returned empty list
-                            logger.warning("Reranking returned empty list, falling back to original documents")
-                            return initial_docs[:5]
-                    except Exception as rerank_error:
-                        # If reranking fails, log the error and fall back to the initial docs
-                        logger.error(f"Error during reranking: {str(rerank_error)}")
-                        return initial_docs[:5]
-                else:
-                    # If no documents were found, return an empty list
-                    logger.warning(f"No documents found for query: {query}")
-                    return []
-            except Exception as e:
-                # If there's any error in the retrieval process, log it and return an empty list
-                logger.error(f"Error in document retrieval: {str(e)}")
-                return []
-
-        # Create a custom retrieval chain that uses our reranking function
-        def format_docs(docs):
-            return "\n\n".join(doc.page_content for doc in docs)
-        
-        retrieval_chain = {
-            "context": lambda x: format_docs(retrieve_and_rerank(x["input"])),
-            "input": lambda x: x["input"],
-            "chat_history": lambda x: x.get("chat_history", [])
-        } | RunnablePassthrough() | document_chain
+        # Use standard create_retrieval_chain without custom reranking
+        retrieval_chain = create_retrieval_chain(
+            retriever, 
+            document_chain
+        )
         
         # Cache the chain
         CHAIN_CACHE[bot_type_selected] = retrieval_chain
@@ -253,6 +211,10 @@ def application():
     # Set up the conversation aliases:
     user_name = st.session_state.display_name
     assistant_name = "ABC Knowledge Assistant"
+    
+    # ALWAYS create the chat input at the beginning to ensure it's always visible
+    # This is a critical fix for the missing chat input issue
+    input_prompt = st.chat_input("Ask me something...")
 
     try:
         # RENDER THE HEADER OF THE MAIN SCREEN 
@@ -271,8 +233,6 @@ def application():
         retrieval_chain = get_retrieval_chain(bot_type_selected)
         if retrieval_chain is None:
             st.error("Unable to initialize retrieval chain. Please check your configuration.")
-            # Still create the chat input even if retrieval chain fails
-            st.chat_input("Ask me something...")
             return
         
         if "messages" not in st.session_state:
@@ -399,126 +359,125 @@ def application():
                                         # Reset form state and rerun
                                         st.session_state[f"show_form_{response_id}"] = False
                                         st.rerun()
-        
-        # IMPORTANT: Move the chat input declaration outside the conditional
-        # This ensures it's always created regardless of conditional logic
-        input_prompt = st.chat_input("Ask me something...")
-        
-        # Handle new messages if input_prompt exists
+            
+        # Handle new messages
         if input_prompt:
             # Start timing for performance measurement
             start_time = datetime.now()
             
-            # Get database connection early
-            conn, cur = get_db_connection()
-            
-            # Preprocess the prompt
-            processed_prompt = functions.preprocess_query(input_prompt)
-            
-            # Add user message to session and display it
-            st.session_state.messages.append({"role": "user", "content": input_prompt})
-            with st.chat_message("user", avatar=os.path.join(base_directory, 'assets', 'user.png')):
-                st.markdown(f"<div class='user-name' style='color: lightblue;'>{user_name}</div>", unsafe_allow_html=True)
-                st.write(' ')
-                st.markdown(input_prompt)
-            
-            # Prepare chat history - optimize by using only last few messages for context
-            recent_messages = st.session_state.messages[-7:-1] if len(st.session_state.messages) > 1 else []
-            chat_history = [
-                HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
-                for m in recent_messages
-            ]
-            
-            # Create a container for the assistant's response
-            with st.chat_message("assistant", avatar=os.path.join(base_directory, 'assets', "chatbot.png")):
-                message_placeholder = st.empty()
-                
-                # Show thinking animation while generating response
-                with message_placeholder:
-                    functions.thinking_animation()
-                    
-                    try:
-                        # Generate response
-                        with get_openai_callback() as cb:
-                            # Generate response
-                            result = retrieval_chain.invoke({
-                                "input": processed_prompt,
-                                "chat_history": chat_history
-                            })
-                            
-                            # Get just the answer part 
-                            answer_only = result["answer"]
-                            
-                            # Get source documents
-                            source_docs = result.get("context", [])
-                            
-                            # Replace thinking animation with the answer
-                            message_placeholder.markdown(f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", unsafe_allow_html=True)
-                            message_placeholder.write(' ')
-                            message_placeholder.markdown(answer_only)
-                            
-                            # Display sources below the answer
-                            if source_docs:
-                                display_sources(source_docs, answer_only)
-                        
-                    except Exception as e:
-                        logger.error(f"Error generating response: {str(e)}")
-                        st.error("I had trouble generating a response. Please try again or rephrase your question.")
-                        return
-            
-            # Generate a unique ID for this response
-            response_id = str(uuid.uuid4())
-            
-            # For logging purposes, combine the answer and sources
-            if source_docs:
-                full_response = answer_only + "\n\nSources:\n" + "\n".join([f"- {doc.metadata.get('source', 'Unknown')}" for doc in source_docs])
-            else:
-                full_response = answer_only
-            
-            # Add the response to session state with the answer, sources, and ID
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": full_response,  # For backward compatibility
-                "answer": answer_only,     # Just the answer part
-                "sources": source_docs,    # Source documents
-                "id": response_id,
-                "prompt": input_prompt
-            })
-            
-            # Log conversation IMMEDIATELY instead of in background
             try:
-                logger.info(f"Logging conversation to database")
-                # Use direct call to log_conversation function
-                success = functions.log_conversation(
-                    sql_database, cur, logger, 
-                    st.session_state.conversation_id, 
-                    input_prompt, full_response, None, 
-                    st.session_state['display_name'], 
-                    st.session_state['user_email'], 
-                    bot_type_selected
-                )
-                if success:
-                    logger.info(f"Successfully logged conversation to database")
-                else:
-                    logger.error(f"Failed to log conversation to database")
-            except Exception as log_error:
-                logger.error(f"Error logging conversation: {str(log_error)}")
+                # Get database connection early
+                conn, cur = get_db_connection()
+                
+                # Preprocess the prompt
+                processed_prompt = functions.preprocess_query(input_prompt)
+                
+                # Add user message to session and display it
+                st.session_state.messages.append({"role": "user", "content": input_prompt})
+                with st.chat_message("user", avatar=os.path.join(base_directory, 'assets', 'user.png')):
+                    st.markdown(f"<div class='user-name' style='color: lightblue;'>{user_name}</div>", unsafe_allow_html=True)
+                    st.write(' ')
+                    st.markdown(input_prompt)
+                
+                # Prepare chat history - optimize by using only last few messages for context
+                recent_messages = st.session_state.messages[-7:-1] if len(st.session_state.messages) > 1 else []
+                chat_history = [
+                    HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
+                    for m in recent_messages
+                ]
+                
+                # Create a container for the assistant's response
+                with st.chat_message("assistant", avatar=os.path.join(base_directory, 'assets', "chatbot.png")):
+                    message_placeholder = st.empty()
+                    
+                    # Show thinking animation while generating response
+                    with message_placeholder:
+                        functions.thinking_animation()
+                        
+                        try:
+                            # Generate response
+                            with get_openai_callback() as cb:
+                                # Generate response
+                                result = retrieval_chain.invoke({
+                                    "input": processed_prompt,
+                                    "chat_history": chat_history
+                                })
+                                
+                                # Get just the answer part 
+                                answer_only = result["answer"]
+                                
+                                # Get source documents
+                                source_docs = result.get("source_documents", [])
+                                
+                                # Replace thinking animation with the answer
+                                message_placeholder.markdown(f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", unsafe_allow_html=True)
+                                message_placeholder.write(' ')
+                                message_placeholder.markdown(answer_only)
+                                
+                                # Display sources below the answer
+                                if source_docs:
+                                    display_sources(source_docs, answer_only)
+                            
+                        except Exception as e:
+                            logger.error(f"Error generating response: {str(e)}")
+                            st.error("I had trouble generating a response. Please try again or rephrase your question.")
+                            return
+                
+                # Generate a unique ID for this response
+                response_id = str(uuid.uuid4())
+                
+                # For logging purposes, combine the answer and sources
+                full_response = answer_only
+                if source_docs:
+                    source_text = "\n\nSources:\n" + "\n".join([f"- {doc.metadata.get('source', 'Unknown')}" for doc in source_docs])
+                    full_response += source_text
+                
+                # Add the response to session state with the answer, sources, and ID
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": full_response,  # For backward compatibility
+                    "answer": answer_only,     # Just the answer part
+                    "sources": source_docs,    # Source documents
+                    "id": response_id,
+                    "prompt": input_prompt
+                })
+                
+                # Log conversation IMMEDIATELY instead of in background
+                try:
+                    logger.info(f"Logging conversation to database")
+                    # Use direct call to log_conversation function
+                    success = functions.log_conversation(
+                        sql_database, cur, logger, 
+                        st.session_state.conversation_id, 
+                        input_prompt, full_response, None, 
+                        st.session_state['display_name'], 
+                        st.session_state['user_email'], 
+                        bot_type_selected
+                    )
+                    if success:
+                        logger.info(f"Successfully logged conversation to database")
+                    else:
+                        logger.error(f"Failed to log conversation to database")
+                except Exception as log_error:
+                    logger.error(f"Error logging conversation: {str(log_error)}")
+                
+                # Calculate and log response time for monitoring
+                end_time = datetime.now()
+                response_time = (end_time - start_time).total_seconds()
+                logger.info(f"Response generated in {response_time:.2f} seconds")
+                
+                # Force refresh to show the new message with feedback buttons
+                st.rerun()
             
-            # Calculate and log response time for monitoring
-            end_time = datetime.now()
-            response_time = (end_time - start_time).total_seconds()
-            logger.info(f"Response generated in {response_time:.2f} seconds")
-            
-            # Force refresh to show the new message with feedback buttons
-            st.rerun()
+            except Exception as e:
+                logger.error(f"Error processing user input: {str(e)}")
+                st.error("An error occurred while processing your input. Please try again.")
+                return
             
     except Exception as e:
         print(e)
         logger.error(f"An error occurred: {str(e)}")
         st.error("An error occurred while processing your request. Please try again.")
-        
-        # Still render the chat input even if there's an error
-        st.chat_input("Ask me something...")
 
 
 def main():
