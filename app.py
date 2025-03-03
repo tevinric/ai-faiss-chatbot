@@ -386,24 +386,28 @@ def application():
                     try:
                         # Generate response
                         with get_openai_callback() as cb:
-                            # Generate response
+                            # Generate response using invoke
                             result = retrieval_chain.invoke({
                                 "input": processed_prompt,
                                 "chat_history": chat_history
                             })
                             
-                            # Get just the answer part 
-                            answer_only = result["answer"]
-                            
-                            # Get source documents
-                            source_docs = result.get("context", [])
+                            # Extract answer and context from the chain's output
+                            if isinstance(result, dict):
+                                answer_only = result.get("answer", "")
+                                source_docs = result.get("context", [])
+                            else:
+                                # Handle case where result is not a dictionary
+                                answer_only = str(result)
+                                source_docs = []
                             
                             # Replace thinking animation with the answer
-                            message_placeholder.markdown(f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", unsafe_allow_html=True)
+                            message_placeholder.markdown(f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", 
+                                                        unsafe_allow_html=True)
                             message_placeholder.write(' ')
                             message_placeholder.markdown(answer_only)
                             
-                            # Display sources below the answer
+                            # Display sources below the answer if available
                             if source_docs:
                                 display_sources(source_docs, answer_only)
                         
