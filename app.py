@@ -45,8 +45,8 @@ folder_name = "faiss_index"
 vectorstore_path = os.path.join(base_directory, folder_name)
 
 ### SET THE APPLICATION RUN TYPE
-app_type = 'dev'
-#app_type = 'prod'
+#app_type = 'dev'
+app_type = 'prod'
 
 # SET THE PAGE CONFIGURATION (PAGE TITLE, PAGE ICON)
 functions.render_page_config(base_directory)
@@ -99,16 +99,18 @@ def get_retrieval_chain(bot_type_selected):
     if bot_type_selected in CHAIN_CACHE:
         return CHAIN_CACHE[bot_type_selected]
     
-    # Get cached vectorstore
-    vectorstore = get_vectorstore(bot_type_selected)
-    if vectorstore is None:
-        return None
-    
-    # Get cached LLM with appropriate temperature
-    llm = get_llm(0.2, bot_type_selected)  # Slightly higher but still low for consistency
-    
-    # Create a balanced source-focused prompt that won't trigger safety alerts
-    balanced_prompt = """You are a helpful knowledge assistant that provides accurate information from reference documents.
+    try:
+        # Get cached vectorstore
+        vectorstore = get_vectorstore(bot_type_selected)
+        if vectorstore is None:
+            logger.error(f"No vectorstore found for {bot_type_selected}")
+            return None
+        
+        # Get cached LLM with appropriate temperature
+        llm = get_llm(0.2, bot_type_selected)  # Slightly higher but still low for consistency
+        
+        # Create a balanced source-focused prompt that won't trigger safety alerts
+        balanced_prompt = """You are a helpful knowledge assistant that provides accurate information from reference documents.
 
 GUIDANCE FOR ACCURATE RESPONSES:
 - Focus on sharing information that comes directly from the provided sources
@@ -122,85 +124,90 @@ GUIDANCE FOR ACCURATE RESPONSES:
 
 Your goal is to be accurate, helpful, and transparent about where information comes from.
 """
-    
-    # Get the base prompt from config and combine with our source focus guidance
-    base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
-    combined_prompt = base_prompt + "\n\n" + balanced_prompt
-    
-    # Create prompt template with balanced instructions
-    prompt_template = ChatPromptTemplate.from_messages(
-        [
-            ("system", combined_prompt), 
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{input}"),
-            ("human", "Here's relevant context from our knowledge base: {context}"),
-        ]
-    )
-    
-    # Create document chain
-    document_chain = create_stuff_documents_chain(
-        llm, 
-        prompt_template,
-    )
-    
-    # Set up retriever with increased number of chunks for initial retrieval
-    retriever = vectorstore.as_retriever(
-        search_kwargs={
-            "k": 10,       # Retrieve more chunks for reranking
-            "fetch_k": 20  # Consider more candidates
-        }
-    )
+        
+        # Get the base prompt from config and combine with our source focus guidance
+        base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
+        combined_prompt = base_prompt + "\n\n" + balanced_prompt
+        
+        # Create prompt template with balanced instructions
+        prompt_template = ChatPromptTemplate.from_messages(
+            [
+                ("system", combined_prompt), 
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{input}"),
+                ("human", "Here's relevant context from our knowledge base: {context}"),
+            ]
+        )
+        
+        # Create document chain
+        document_chain = create_stuff_documents_chain(
+            llm, 
+            prompt_template,
+        )
+        
+        # Set up retriever with increased number of chunks for initial retrieval
+        retriever = vectorstore.as_retriever(
+            search_kwargs={
+                "k": 10,       # Retrieve more chunks for reranking
+                "fetch_k": 20  # Consider more candidates
+            }
+        )
 
-    # Create a custom retrieval function with reranking
-def retrieve_and_rerank(query):
-    """
-    Retrieves documents using FAISS vector search and then applies reranking 
-    using the Cohere rerank model to improve relevance.
-    
-    Args:
-        query: The user's query string
-    
-    Returns:
-        A list of reranked Document objects
-    """
-    try:
-        # First get documents using the standard FAISS retriever
-        initial_docs = retriever.get_relevant_documents(query)
+        # Create a more robust retrieve_and_rerank function
+        def retrieve_and_rerank(query):
+            """Retrieve documents and rerank them for improved relevance"""
+            try:
+                # First get documents using the standard FAISS retriever
+                initial_docs = retriever.get_relevant_documents(query)
+                
+                # Log the retrieval success
+                logger.info(f"Retrieved {len(initial_docs)} documents from FAISS")
+                
+                # If we got documents from FAISS, try to rerank them
+                if initial_docs:
+                    try:
+                        # Apply reranking to these documents
+                        reranked_docs = config.rerank_documents(initial_docs, query, top_k=5)
+                        
+                        # If reranking was successful, return the reranked docs
+                        if reranked_docs:
+                            logger.info(f"Successfully reranked documents, returning {len(reranked_docs)} documents")
+                            return reranked_docs
+                        else:
+                            # Fallback if reranking returned empty list
+                            logger.warning("Reranking returned empty list, falling back to original documents")
+                            return initial_docs[:5]
+                    except Exception as rerank_error:
+                        # If reranking fails, log the error and fall back to the initial docs
+                        logger.error(f"Error during reranking: {str(rerank_error)}")
+                        return initial_docs[:5]
+                else:
+                    # If no documents were found, return an empty list
+                    logger.warning(f"No documents found for query: {query}")
+                    return []
+            except Exception as e:
+                # If there's any error in the retrieval process, log it and return an empty list
+                logger.error(f"Error in document retrieval: {str(e)}")
+                return []
+
+        # Create a custom retrieval chain that uses our reranking function
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
         
-        if not initial_docs:
-            logger.warning(f"No documents found for query: {query}")
-            return []
+        retrieval_chain = {
+            "context": lambda x: format_docs(retrieve_and_rerank(x["input"])),
+            "input": lambda x: x["input"],
+            "chat_history": lambda x: x.get("chat_history", [])
+        } | RunnablePassthrough() | document_chain
         
-        logger.info(f"Retrieved {len(initial_docs)} initial documents, applying reranking")
+        # Cache the chain
+        CHAIN_CACHE[bot_type_selected] = retrieval_chain
+        return retrieval_chain
         
-        # Apply reranking to these documents
-        reranked_docs = config.rerank_documents(initial_docs, query, top_k=5)
-        
-        logger.info(f"Reranking complete, returning {len(reranked_docs)} documents")
-        return reranked_docs
-    
     except Exception as e:
-        logger.error(f"Error in retrieve_and_rerank: {str(e)}")
-        # Fallback to original retrieval if reranking fails
-        try:
-            return retriever.get_relevant_documents(query)[:5]
-        except Exception as retrieval_error:
-            logger.error(f"Fallback retrieval also failed: {str(retrieval_error)}")
-            return []
-
-    # Create a custom retrieval chain that uses our reranking function
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
-    
-    retrieval_chain = {
-        "context": lambda x: format_docs(retrieve_and_rerank(x["input"])),
-        "input": lambda x: x["input"],
-        "chat_history": lambda x: x.get("chat_history", [])
-    } | RunnablePassthrough() | document_chain
-    
-    # Cache the chain
-    CHAIN_CACHE[bot_type_selected] = retrieval_chain
-    return retrieval_chain
+        logger.error(f"Error setting up retrieval chain: {str(e)}")
+        st.error(f"Error setting up retrieval chain: {str(e)}")
+        return None
 
 # Function to get a database connection
 def get_db_connection():
@@ -263,6 +270,9 @@ def application():
         # Get retrieval chain for the selected bot type
         retrieval_chain = get_retrieval_chain(bot_type_selected)
         if retrieval_chain is None:
+            st.error("Unable to initialize retrieval chain. Please check your configuration.")
+            # Still create the chat input even if retrieval chain fails
+            st.chat_input("Ask me something...")
             return
         
         if "messages" not in st.session_state:
@@ -389,9 +399,13 @@ def application():
                                         # Reset form state and rerun
                                         st.session_state[f"show_form_{response_id}"] = False
                                         st.rerun()
-            
-        # Handle new messages
-        if prompt := st.chat_input("Ask me something..."):
+        
+        # IMPORTANT: Move the chat input declaration outside the conditional
+        # This ensures it's always created regardless of conditional logic
+        input_prompt = st.chat_input("Ask me something...")
+        
+        # Handle new messages if input_prompt exists
+        if input_prompt:
             # Start timing for performance measurement
             start_time = datetime.now()
             
@@ -399,14 +413,14 @@ def application():
             conn, cur = get_db_connection()
             
             # Preprocess the prompt
-            processed_prompt = functions.preprocess_query(prompt)
+            processed_prompt = functions.preprocess_query(input_prompt)
             
             # Add user message to session and display it
-            st.session_state.messages.append({"role": "user", "content": prompt})
+            st.session_state.messages.append({"role": "user", "content": input_prompt})
             with st.chat_message("user", avatar=os.path.join(base_directory, 'assets', 'user.png')):
                 st.markdown(f"<div class='user-name' style='color: lightblue;'>{user_name}</div>", unsafe_allow_html=True)
                 st.write(' ')
-                st.markdown(prompt)
+                st.markdown(input_prompt)
             
             # Prepare chat history - optimize by using only last few messages for context
             recent_messages = st.session_state.messages[-7:-1] if len(st.session_state.messages) > 1 else []
@@ -468,7 +482,7 @@ def application():
                 "answer": answer_only,     # Just the answer part
                 "sources": source_docs,    # Source documents
                 "id": response_id,
-                "prompt": prompt
+                "prompt": input_prompt
             })
             
             # Log conversation IMMEDIATELY instead of in background
@@ -478,7 +492,7 @@ def application():
                 success = functions.log_conversation(
                     sql_database, cur, logger, 
                     st.session_state.conversation_id, 
-                    prompt, full_response, None, 
+                    input_prompt, full_response, None, 
                     st.session_state['display_name'], 
                     st.session_state['user_email'], 
                     bot_type_selected
@@ -497,13 +511,14 @@ def application():
             
             # Force refresh to show the new message with feedback buttons
             st.rerun()
-        
-        else:
-            st.write(" ")
+            
     except Exception as e:
         print(e)
         logger.error(f"An error occurred: {str(e)}")
         st.error("An error occurred while processing your request. Please try again.")
+        
+        # Still render the chat input even if there's an error
+        st.chat_input("Ask me something...")
 
 
 def main():

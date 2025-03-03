@@ -65,6 +65,7 @@ def instantiate_llm(temperature):
     return azure_llm
 
 #### RERANK FUNCTION
+
 def rerank_documents(documents, query, top_k=5):
     """
     Reranks a list of documents based on their relevance to the query using Azure's Cohere rerank model.
@@ -77,14 +78,22 @@ def rerank_documents(documents, query, top_k=5):
     Returns:
         A list of reranked Document objects
     """
+    # If no documents provided, return empty list
     if not documents:
+        print("No documents provided for reranking")
         return []
+    
+    # Ensure top_k doesn't exceed document count
+    top_k = min(top_k, len(documents))
     
     try:
         import urllib.request
         import json
         import os
         import ssl
+        import logging
+        
+        logger = logging.getLogger(__name__)
         
         # Allow self-signed HTTPS certificates if needed
         def allowSelfSignedHttps(allowed):
@@ -94,19 +103,28 @@ def rerank_documents(documents, query, top_k=5):
         
         allowSelfSignedHttps(True)
         
+        # Check if we have the necessary credentials
+        if not AZURE_COHERE_RERANK_KEY:
+            logger.warning("AZURE_COHERE_RERANK_KEY is not set. Skipping reranking.")
+            return documents[:top_k]
+        
         # Prepare the payload for the Azure Cohere rerank API
         payload = {
             "documents": [doc.page_content for doc in documents],
             "query": query,
-            "top_n": min(top_k, len(documents)),
+            "top_n": top_k,
             "model": AZURE_COHERE_RERANK_DEPLOYMENT
         }
+        
+        # Log the payload size
+        logger.info(f"Reranking {len(documents)} documents with query: {query[:50]}{'...' if len(query) > 50 else ''}")
         
         # Convert the payload to bytes
         body = str.encode(json.dumps(payload))
         
         # Set the URL for the rerank endpoint
         url = f"{AZURE_COHERE_RERANK_ENDPOINT}/v1/rerank"
+        logger.info(f"Calling rerank endpoint: {url}")
         
         # Set up headers with the API key
         headers = {
@@ -117,20 +135,39 @@ def rerank_documents(documents, query, top_k=5):
         # Create the request
         req = urllib.request.Request(url, body, headers)
         
-        # Make the API call
-        response = urllib.request.urlopen(req)
-        result = response.read()
-        
-        # Parse the response
-        result_json = json.loads(result)
-        
-        # Extract the reranked indices
-        reranked_indices = [item["index"] for item in result_json["results"]]
-        
-        # Reorder the documents based on the reranked indices
-        reranked_documents = [documents[idx] for idx in reranked_indices]
-        
-        return reranked_documents
+        # Make the API call with timeout
+        try:
+            response = urllib.request.urlopen(req, timeout=10)
+            result = response.read()
+            
+            # Parse the response
+            result_json = json.loads(result)
+            
+            # Extract the reranked indices
+            if "results" in result_json and result_json["results"]:
+                # Extract indices and make sure they're valid
+                reranked_indices = [item["index"] for item in result_json["results"] 
+                                   if "index" in item and 0 <= item["index"] < len(documents)]
+                
+                # Reorder the documents based on the reranked indices
+                reranked_documents = [documents[idx] for idx in reranked_indices]
+                
+                logger.info(f"Reranking successful. Returning {len(reranked_documents)} documents.")
+                return reranked_documents
+            else:
+                logger.warning(f"Unexpected response structure from reranking API: {result_json}")
+                return documents[:top_k]
+                
+        except urllib.error.HTTPError as error:
+            logger.error(f"HTTP error during reranking: {error.code} {error.reason}")
+            logger.error(f"Response: {error.read().decode('utf8', 'ignore')}")
+            return documents[:top_k]
+        except urllib.error.URLError as error:
+            logger.error(f"URL error during reranking: {error.reason}")
+            return documents[:top_k]
+        except TimeoutError:
+            logger.error("Timeout while calling reranking API")
+            return documents[:top_k]
         
     except Exception as e:
         print(f"Error during reranking: {str(e)}")
