@@ -126,7 +126,6 @@ def get_retrieval_chain(bot_type_selected):
         return None
     
     llm = get_llm(0.2, bot_type_selected)
-    reranker_config = config.instantiate_reranker()
     
     # Set up retriever
     retriever = vectorstore.as_retriever(
@@ -137,30 +136,36 @@ def get_retrieval_chain(bot_type_selected):
     base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
     combined_prompt = base_prompt + "\n\n" + balanced_prompt
     
+    # Create the chat prompt template with proper formatting
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", combined_prompt),
         MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}"),
-        ("human", "Here's relevant context from our knowledge base: {context}")
+        ("human", "Here are relevant documents: {context}")
     ])
     
-    # Create document chain
-    document_chain = create_stuff_documents_chain(
-        llm=llm,
-        prompt=prompt_template
+    # Create document chain with formatted documents
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+    
+    # Create the complete chain
+    chain = (
+        {
+            "context": lambda x: retriever.get_relevant_documents(x["input"]),
+            "input": lambda x: x["input"],
+            "chat_history": lambda x: x.get("chat_history", [])
+        } 
+        | RunnablePassthrough.assign(
+            context=lambda x: format_docs(x["context"])
+        )
+        | prompt_template
+        | llm
+        | {"answer": lambda x: x.content, "context": lambda x: x["context"]}
     )
-
-    # Create retrieval chain using RunnablePassthrough
-    retrieval_chain = RunnablePassthrough.assign(
-        context=lambda x: retriever.get_relevant_documents(x["input"])
-    ) | {
-        "answer": lambda x: document_chain.invoke(x)["answer"],
-        "context": lambda x: x["context"]
-    }
     
     # Cache and return the chain
-    CHAIN_CACHE[bot_type_selected] = retrieval_chain
-    return retrieval_chain
+    CHAIN_CACHE[bot_type_selected] = chain
+    return chain
 
 # Function to get a database connection
 def get_db_connection():
@@ -392,18 +397,15 @@ def application():
                                 "chat_history": chat_history
                             })
                             
-                            # Extract answer and context from the chain's output
-                            if isinstance(result, dict):
-                                answer_only = result.get("answer", "")
-                                source_docs = result.get("context", [])
-                            else:
-                                # Handle case where result is not a dictionary
-                                answer_only = str(result)
-                                source_docs = []
+                            # Extract answer and source documents
+                            answer_only = result["answer"] if isinstance(result, dict) else str(result)
+                            source_docs = retriever.get_relevant_documents(processed_prompt)
                             
                             # Replace thinking animation with the answer
-                            message_placeholder.markdown(f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", 
-                                                        unsafe_allow_html=True)
+                            message_placeholder.markdown(
+                                f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", 
+                                unsafe_allow_html=True
+                            )
                             message_placeholder.write(' ')
                             message_placeholder.markdown(answer_only)
                             
