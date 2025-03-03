@@ -146,7 +146,8 @@ def get_retrieval_chain(bot_type_selected):
 
     # Create document chain with formatted documents
     def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+        # Safely grab page_content if available, otherwise use str(doc)
+        return "\n\n".join(doc.page_content if hasattr(doc, "page_content") else str(doc) for doc in docs)
 
     # Create document chain
     document_chain = create_stuff_documents_chain(
@@ -159,7 +160,7 @@ def get_retrieval_chain(bot_type_selected):
         docs = retriever.get_relevant_documents(input_dict["input"])
         formatted_docs = format_docs(docs)
         
-        # Generate response
+        # Generate response from the document chain
         response = document_chain.invoke({
             "context": formatted_docs,
             "input": input_dict["input"],
