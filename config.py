@@ -14,6 +14,8 @@ import streamlit as st
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_EMBEDDING_ENDPOINT = os.environ.get("AZURE_EMBEDDING_ENDPOINT")
+AZURE_COHERE_RERANK_KEY = os.environ.get("AZURE_COHERE_RERANK_KEY")
+AZURE_COHERE_RERANK_ENDPOINT = os.environ.get("AZURE_COHERE_RERANK_ENDPOINT")
 
 ## ACTIVE DIRECTORY INTEGRATION
 AAD_CLIENT_ID = os.environ.get("AAD_CLIENT_ID")
@@ -58,6 +60,14 @@ def instantiate_llm(temperature):
     )
     return azure_llm
 
+def instantiate_reranker():
+    """Initialize the Cohere reranking model through Azure"""
+    from langchain_openai import AzureOpenAIEmbeddings
+    return {
+        'endpoint': AZURE_COHERE_RERANK_ENDPOINT,
+        'api_key': AZURE_COHERE_RERANK_KEY,
+        'deployment': 'coe-chatbot-cohere-rerank'  # Update with your deployment name
+    }
 
 #### LLM HYPERPARAMETERS
 

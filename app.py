@@ -92,9 +92,9 @@ def get_vectorstore(bot_type_selected):
         st.error(f"No vectorstore found at {load_path}. Please ensure the FAISS index has been created and saved.")
         return None
 
-# Get retrieval chain with caching - updated for safe but accurate source focus
+# Update get_retrieval_chain function
 def get_retrieval_chain(bot_type_selected):
-    """Get cached retrieval chain for specific bot type with accurate source representation"""
+    """Get cached retrieval chain with reranking for specific bot type"""
     if bot_type_selected in CHAIN_CACHE:
         return CHAIN_CACHE[bot_type_selected]
     
@@ -103,25 +103,29 @@ def get_retrieval_chain(bot_type_selected):
     if vectorstore is None:
         return None
     
-    # Get cached LLM with appropriate temperature
-    llm = get_llm(0.2, bot_type_selected)  # Slightly higher but still low for consistency
+    # Get cached LLM
+    llm = get_llm(0.2, bot_type_selected)
     
-    # Create a balanced source-focused prompt that won't trigger safety alerts
-    balanced_prompt = """You are a helpful knowledge assistant that provides accurate information from reference documents.
-
-GUIDANCE FOR ACCURATE RESPONSES:
-- Focus on sharing information that comes directly from the provided sources
-- When appropriate, include relevant quotes and excerpts from the source material
-- Please clearly attribute information by mentioning source documents
-- Aim to preserve the original context and meaning of the information
-- Include complete information from sources when answering questions
-- If sources contain contradictory information, acknowledge both perspectives
-- When the sources don't address a specific question, politely explain this limitation
-- For technical details or specific procedures, refer closely to the source wording
-
-Your goal is to be accurate, helpful, and transparent about where information comes from.
-"""
+    # Get reranker configuration
+    reranker_config = config.instantiate_reranker()
     
+    # Set up retriever with increased initial retrieval
+    retriever = vectorstore.as_retriever(
+        search_kwargs={
+            "k": 15,  # Retrieve more documents initially for reranking
+            "fetch_k": 20
+        }
+    )
+    
+    # Modify the retrieval chain to include reranking
+    def enhanced_retriever(query):
+        # Get initial documents
+        docs = retriever.get_relevant_documents(query)
+        # Rerank documents
+        reranked_docs = functions.rerank_documents(docs, query, reranker_config, k=5)
+        return reranked_docs
+    
+    # Create document chain with existing prompt
     # Get the base prompt from config and combine with our source focus guidance
     base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
     combined_prompt = base_prompt + "\n\n" + balanced_prompt
@@ -142,16 +146,8 @@ Your goal is to be accurate, helpful, and transparent about where information co
         prompt_template,
     )
     
-    # Set up retriever with increased number of chunks
-    retriever = vectorstore.as_retriever(
-        search_kwargs={
-            "k": 5,        # Retrieve more chunks
-            "fetch_k": 10   # Consider more candidates
-        }
-    )
-
-    # Set up retrieval chain
-    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    # Create retrieval chain with enhanced retriever
+    retrieval_chain = create_retrieval_chain(enhanced_retriever, document_chain)
     
     # Cache the chain
     CHAIN_CACHE[bot_type_selected] = retrieval_chain
