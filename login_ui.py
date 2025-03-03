@@ -128,8 +128,8 @@ def login_ui():
         st.write(' ')  
   
     st.write(" ")  
-    st.markdown("<h1 style='text-align: center; font-size: 20px;'>XYZ Knowledge Chatbot Authentication</h1>", unsafe_allow_html=True)  
-    st.markdown("<p style='text-align: center;'>You must authenticate using your XYZ account to access the Chatbot</p>", unsafe_allow_html=True)  
+    st.markdown("<h1 style='text-align: center; font-size: 20px;'>ABC Knowledge Chatbot Authentication</h1>", unsafe_allow_html=True)  
+    st.markdown("<p style='text-align: center;'>You must authenticate using your ABC account to access the Chatbot</p>", unsafe_allow_html=True)  
   
     app = initialize_app()  
     user_data = authentication_process(app)  

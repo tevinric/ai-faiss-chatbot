@@ -21,8 +21,6 @@ from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from streamlit_modal import Modal  
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.documents import Document
 
 #from login_ui import login_ui
 import config
@@ -46,8 +44,8 @@ folder_name = "faiss_index"
 vectorstore_path = os.path.join(base_directory, folder_name)
 
 ### SET THE APPLICATION RUN TYPE
-app_type = 'dev'
-#app_type = 'prod'
+#app_type = 'dev'
+app_type = 'prod'
 
 # SET THE PAGE CONFIGURATION (PAGE TITLE, PAGE ICON)
 functions.render_page_config(base_directory)
@@ -56,27 +54,6 @@ functions.render_page_config(base_directory)
 MODEL_CACHE = {}
 VECTORSTORE_CACHE = {}
 CHAIN_CACHE = {}
-
-# Define balanced prompt for source handling
-balanced_prompt = """
-IMPORTANT SOURCE HANDLING INSTRUCTIONS:
-1. Base responses PRIMARILY on the provided reference content
-2. When possible, use DIRECT QUOTES or close paraphrasing from sources
-3. Do not invent or assume information not present in sources
-4. If sources don't contain needed information, clearly state this limitation
-5. Maintain original meaning without significant alterations
-6. Prioritize accuracy over comprehensiveness 
-7. If sources seem contradictory, acknowledge this
-8. For technical details, use EXACT wording from sources
-9. Synthesize information from multiple sources when relevant
-10. Cite specific sources when providing key information
-
-FORMAT RESPONSES AS FOLLOWS:
-- Start with direct answer to question
-- Support with relevant quotes/evidence from sources
-- Acknowledge limitations or uncertainties
-- Keep tone professional but conversational
-"""
 
 # Cache the common resources with longer TTL
 @st.cache_resource(ttl=24*3600)  # Cache for 24 hours
@@ -115,110 +92,70 @@ def get_vectorstore(bot_type_selected):
         st.error(f"No vectorstore found at {load_path}. Please ensure the FAISS index has been created and saved.")
         return None
 
-# Update the get_retrieval_chain function in app.py
+# Get retrieval chain with caching - updated for safe but accurate source focus
 def get_retrieval_chain(bot_type_selected):
-    """Get cached retrieval chain with reranking for specific bot type"""
+    """Get cached retrieval chain for specific bot type with accurate source representation"""
     if bot_type_selected in CHAIN_CACHE:
         return CHAIN_CACHE[bot_type_selected]
     
-    # Get cached vectorstore and LLM
+    # Get cached vectorstore
     vectorstore = get_vectorstore(bot_type_selected)
     if vectorstore is None:
         return None
     
-    llm = get_llm(0.2, bot_type_selected)
+    # Get cached LLM with appropriate temperature
+    llm = get_llm(0.2, bot_type_selected)  # Slightly higher but still low for consistency
     
-    # Set up retriever
-    retriever = vectorstore.as_retriever(
-        search_kwargs={"k": 15, "fetch_k": 20}
-    )
+    # Create a balanced source-focused prompt that won't trigger safety alerts
+    balanced_prompt = """You are a helpful knowledge assistant that provides accurate information from reference documents.
+
+GUIDANCE FOR ACCURATE RESPONSES:
+- Focus on sharing information that comes directly from the provided sources
+- When appropriate, include relevant quotes and excerpts from the source material
+- Please clearly attribute information by mentioning source documents
+- Aim to preserve the original context and meaning of the information
+- Include complete information from sources when answering questions
+- If sources contain contradictory information, acknowledge both perspectives
+- When the sources don't address a specific question, politely explain this limitation
+- For technical details or specific procedures, refer closely to the source wording
+
+Your goal is to be accurate, helpful, and transparent about where information comes from.
+"""
     
-    # Get prompts and create template
+    # Get the base prompt from config and combine with our source focus guidance
     base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
     combined_prompt = base_prompt + "\n\n" + balanced_prompt
     
-    def generate_response(input_dict):
-        try:
-            # Get relevant documents and ensure they are Document objects
-            raw_docs = retriever.get_relevant_documents(input_dict["input"])
-            
-            # Debug to see what we're getting
-            logger.info(f"Raw docs type: {type(raw_docs)}")
-            if raw_docs and len(raw_docs) > 0:
-                logger.info(f"First doc type: {type(raw_docs[0])}")
-            
-            # Process documents more safely
-            docs = []
-            for doc in raw_docs:
-                if isinstance(doc, Document):
-                    docs.append(doc)
-                elif isinstance(doc, dict) and "page_content" in doc:
-                    # Convert dict with page_content to Document object
-                    docs.append(Document(
-                        page_content=doc["page_content"],
-                        metadata=doc.get("metadata", {"source": "Unknown"})
-                    ))
-                elif hasattr(doc, 'page_content'):  # Sometimes objects have page_content but aren't Document class
-                    docs.append(Document(
-                        page_content=doc.page_content,
-                        metadata=getattr(doc, 'metadata', {"source": "Unknown"})
-                    ))
-                elif isinstance(doc, str):
-                    # Convert string to Document objects
-                    docs.append(Document(
-                        page_content=doc,
-                        metadata={"source": "Unknown"}
-                    ))
-                else:
-                    # Convert other types to Document objects
-                    docs.append(Document(
-                        page_content=str(doc),
-                        metadata={"source": "Unknown"}
-                    ))
-            
-            # Format documents safely
-            formatted_docs = "\n\n".join(
-                getattr(doc, 'page_content', str(doc)) for doc in docs
-            )
-            
-            # Create the prompt template
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", combined_prompt),
-                MessagesPlaceholder(variable_name="chat_history"),
-                ("human", "{input}"),
-                ("human", "Here are relevant documents: {context}")
-            ])
-            
-            # Create and invoke the document chain
-            document_chain = create_stuff_documents_chain(
-                llm=llm,
-                prompt=prompt
-            )
-            
-            # Generate response
-            response = document_chain.invoke({
-                "context": formatted_docs,
-                "input": input_dict["input"],
-                "chat_history": input_dict.get("chat_history", [])
-            })
-            
-            # Make sure we return both answer and properly processed documents
-            return {
-                "answer": response.content if hasattr(response, 'content') else str(response),
-                "context": docs  # Return properly processed Document objects
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in generate_response: {str(e)}")
-            # Return a failsafe response
-            return {
-                "answer": "I'm sorry, I encountered a technical issue processing your request. Please try again or rephrase your question.",
-                "context": []
-            }
+    # Create prompt template with balanced instructions
+    prompt_template = ChatPromptTemplate.from_messages(
+        [
+            ("system", combined_prompt), 
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}"),
+            ("human", "Here's relevant context from our knowledge base: {context}"),
+        ]
+    )
+    
+    # Create document chain
+    document_chain = create_stuff_documents_chain(
+        llm, 
+        prompt_template,
+    )
+    
+    # Set up retriever with increased number of chunks
+    retriever = vectorstore.as_retriever(
+        search_kwargs={
+            "k": 5,        # Retrieve more chunks
+            "fetch_k": 10   # Consider more candidates
+        }
+    )
 
-    # Cache and return the chain
-    CHAIN_CACHE[bot_type_selected] = generate_response
-    return generate_response
+    # Set up retrieval chain
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    
+    # Cache the chain
+    CHAIN_CACHE[bot_type_selected] = retrieval_chain
+    return retrieval_chain
 
 # Function to get a database connection
 def get_db_connection():
@@ -237,91 +174,21 @@ def display_sources(source_documents, answer_text=""):
     if not source_documents:
         return
     
-    try:
-        # Debug information
-        logger.info(f"Source documents type: {type(source_documents)}")
-        if len(source_documents) > 0:
-            logger.info(f"First document type: {type(source_documents[0])}")
-            if hasattr(source_documents[0], 'page_content'):
-                logger.info(f"First document has page_content")
-            else:
-                logger.info(f"First document does NOT have page_content")
+    # Use the function to prepare source documents with highlighting
+    prepared_sources = functions.prepare_source_documents(source_documents, answer_text)
+    
+    if prepared_sources:
+        st.markdown("### Source Documents")
+        st.markdown("*Information was drawn from these reference documents:*")
         
-        # Ensure all source_documents are properly handled
-        processed_docs = []
-        for doc in source_documents:
-            if isinstance(doc, Document):
-                # Already a Document
-                processed_docs.append(doc)
-            elif isinstance(doc, dict) and "page_content" in doc:
-                # Dict with page_content
-                processed_docs.append(Document(
-                    page_content=doc["page_content"],
-                    metadata=doc.get("metadata", {"source": "Unknown"})
-                ))
-            elif hasattr(doc, 'page_content'):
-                # Has page_content but might not be Document class
-                processed_docs.append(Document(
-                    page_content=doc.page_content,
-                    metadata=getattr(doc, 'metadata', {"source": "Unknown"})
-                ))
-            elif isinstance(doc, str):
-                # String - convert to Document
-                processed_docs.append(Document(
-                    page_content=doc,
-                    metadata={"source": "Unknown"}
-                ))
-            else:
-                # Any other type - stringify
-                processed_docs.append(Document(
-                    page_content=str(doc),
-                    metadata={"source": "Unknown"}
-                ))
-                logger.warning(f"Converted unexpected document type: {type(doc)}")
-        
-        # Safeguard - modify prepare_source_documents call with a wrapper
-        def safe_prepare_source_documents(docs, answer):
-            try:
-                # Make one final check that all docs are proper Document objects
-                safe_docs = []
-                for d in docs:
-                    if not isinstance(d, Document) or not hasattr(d, 'page_content'):
-                        safe_docs.append(Document(
-                            page_content=str(d),
-                            metadata={"source": "Unknown"}
-                        ))
-                    else:
-                        safe_docs.append(d)
-                        
-                return functions.prepare_source_documents(safe_docs, answer)
-            except Exception as prep_error:
-                logger.error(f"Error in prepare_source_documents: {str(prep_error)}")
-                # Fall back to simple display
-                return [{"title": f"Source {i+1}", "content": getattr(d, 'page_content', str(d))} 
-                        for i, d in enumerate(docs)]
-        
-        # Use our safe wrapper
-        prepared_sources = safe_prepare_source_documents(processed_docs, answer_text)
-        
-        if prepared_sources:
-            st.markdown("### Source Documents")
-            st.markdown("*Information was drawn from these reference documents:*")
-            
-            # Create an expander for each source
-            for source in prepared_sources:
-                with st.expander(source["title"], expanded=False):
-                    # Get the highlighted text safely
-                    if isinstance(source["content"], dict) and "text" in source["content"]:
-                        highlighted_text = functions.render_highlighted_text(source["content"])
-                    else:
-                        highlighted_text = str(source["content"])
-                    
-                    # Display the highlighted content
-                    st.markdown(f'<div class="source-content">{highlighted_text}</div>', 
-                              unsafe_allow_html=True)
-    except Exception as e:
-        logger.error(f"Error displaying sources: {str(e)}")
-        st.warning("Source documents are available but couldn't be displayed properly.")
+        # Create an expander for each source
+        for source in prepared_sources:
+            with st.expander(source["title"], expanded=False):
+                # Get the highlighted text
+                highlighted_text = functions.render_highlighted_text(source["content"])
+                
+                # Display the highlighted content
+                st.markdown(f'<div class="source-content">{highlighted_text}</div>', unsafe_allow_html=True)
 
 # Streamlined application function
 def application():
@@ -514,44 +381,27 @@ def application():
                     try:
                         # Generate response
                         with get_openai_callback() as cb:
-                            # Generate response using the chain
-                            result = retrieval_chain({
+                            # Generate response
+                            result = retrieval_chain.invoke({
                                 "input": processed_prompt,
                                 "chat_history": chat_history
                             })
                             
-                            # Convert string results to Document objects if needed
-                            source_docs = []
-                            if isinstance(result["context"], list):
-                                for doc in result["context"]:
-                                    if isinstance(doc, str):
-                                        source_docs.append(Document(
-                                            page_content=doc,
-                                            metadata={"source": "Unknown"}
-                                        ))
-                                    else:
-                                        source_docs.append(doc)
-                            else:
-                                # If context is a single string
-                                source_docs.append(Document(
-                                    page_content=str(result["context"]),
-                                    metadata={"source": "Unknown"}
-                                ))
-
+                            # Get just the answer part 
                             answer_only = result["answer"]
                             
+                            # Get source documents
+                            source_docs = result.get("context", [])
+                            
                             # Replace thinking animation with the answer
-                            message_placeholder.markdown(
-                                f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", 
-                                unsafe_allow_html=True
-                            )
+                            message_placeholder.markdown(f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", unsafe_allow_html=True)
                             message_placeholder.write(' ')
                             message_placeholder.markdown(answer_only)
                             
-                            # Display sources below the answer if available
+                            # Display sources below the answer
                             if source_docs:
                                 display_sources(source_docs, answer_only)
-
+                        
                     except Exception as e:
                         logger.error(f"Error generating response: {str(e)}")
                         st.error("I had trouble generating a response. Please try again or rephrase your question.")

@@ -6,8 +6,6 @@ import re
 import streamlit as st
 import uuid
 from collections import Counter
-import json
-import requests
 
 ## CUSTOM IMPORTS
 import config
@@ -634,54 +632,3 @@ def init_feedback_state():
     Initialize any session state variables needed for feedback
     """
     pass  # All state is now handled locally with popovers
-
-def rerank_documents(docs, query, reranker_config, k=5):
-    """
-    Rerank documents using Cohere reranking model through Azure OpenAI.
-    
-    Args:
-        docs: List of retrieved documents
-        query: Original query string
-        reranker_config: Dictionary containing Azure configuration
-        k: Number of documents to return after reranking
-    """
-    if not docs:
-        return []
-        
-    # Prepare documents for reranking
-    documents = [doc.page_content for doc in docs]
-    
-    # Prepare the request
-    headers = {
-        'Content-Type': 'application/json',
-        'api-key': reranker_config['api_key']
-    }
-    
-    data = {
-        "query": query,
-        "documents": documents,
-        "model": "rerank-multilingual-v2.0",  # or your specific model version
-        "top_n": k
-    }
-    
-    # Make request to Azure endpoint
-    response = requests.post(
-        f"{reranker_config['endpoint']}/deployments/{reranker_config['deployment']}/rerank",
-        headers=headers,
-        json=data
-    )
-    
-    if response.status_code != 200:
-        logger.error(f"Reranking failed: {response.text}")
-        return docs[:k]  # Return original top k if reranking fails
-        
-    # Get reranked results
-    results = response.json()
-    
-    # Map reranked indices back to original documents
-    reranked_docs = []
-    for result in results['results']:
-        doc_idx = result['index']
-        reranked_docs.append(docs[doc_idx])
-    
-    return reranked_docs
