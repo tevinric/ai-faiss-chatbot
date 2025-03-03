@@ -206,8 +206,22 @@ def display_sources(source_documents, answer_text=""):
     if not source_documents:
         return
     
+    # Ensure all source_documents are Document objects
+    processed_docs = []
+    for doc in source_documents:
+        if isinstance(doc, Document):
+            processed_docs.append(doc)
+        elif isinstance(doc, str):
+            processed_docs.append(Document(
+                page_content=doc,
+                metadata={"source": "Unknown"}
+            ))
+        else:
+            logger.warning(f"Unexpected document type: {type(doc)}")
+            continue
+    
     # Use the function to prepare source documents with highlighting
-    prepared_sources = functions.prepare_source_documents(source_documents, answer_text)
+    prepared_sources = functions.prepare_source_documents(processed_docs, answer_text)
     
     if prepared_sources:
         st.markdown("### Source Documents")
@@ -220,7 +234,8 @@ def display_sources(source_documents, answer_text=""):
                 highlighted_text = functions.render_highlighted_text(source["content"])
                 
                 # Display the highlighted content
-                st.markdown(f'<div class="source-content">{highlighted_text}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="source-content">{highlighted_text}</div>', 
+                          unsafe_allow_html=True)
 
 # Streamlined application function
 def application():
@@ -419,9 +434,25 @@ def application():
                                 "chat_history": chat_history
                             })
                             
-                            # Extract answer and source documents
+                            # Convert string results to Document objects if needed
+                            source_docs = []
+                            if isinstance(result["context"], list):
+                                for doc in result["context"]:
+                                    if isinstance(doc, str):
+                                        source_docs.append(Document(
+                                            page_content=doc,
+                                            metadata={"source": "Unknown"}
+                                        ))
+                                    else:
+                                        source_docs.append(doc)
+                            else:
+                                # If context is a single string
+                                source_docs.append(Document(
+                                    page_content=str(result["context"]),
+                                    metadata={"source": "Unknown"}
+                                ))
+
                             answer_only = result["answer"]
-                            source_docs = result["context"]
                             
                             # Replace thinking animation with the answer
                             message_placeholder.markdown(
@@ -434,7 +465,7 @@ def application():
                             # Display sources below the answer if available
                             if source_docs:
                                 display_sources(source_docs, answer_only)
-                        
+
                     except Exception as e:
                         logger.error(f"Error generating response: {str(e)}")
                         st.error("I had trouble generating a response. Please try again or rephrase your question.")
