@@ -230,25 +230,19 @@ def get_db_connection():
 def display_sources(source_documents, answer_text=""):
     """
     Display sources as Streamlit expanders with highlighted text.
+    This is a wrapper around the functions.display_sources_with_highlights function.
     """
     if not source_documents:
         return
     
-    # Use the function to prepare source documents with highlighting
-    prepared_sources = functions.prepare_source_documents(source_documents, answer_text)
-    
-    if prepared_sources:
-        st.markdown("### Source Documents")
-        st.markdown("*Information was drawn from these reference documents:*")
-        
-        # Create an expander for each source
-        for source in prepared_sources:
-            with st.expander(source["title"], expanded=False):
-                # Get the highlighted text
-                highlighted_text = functions.render_highlighted_text(source["content"])
-                
-                # Display the highlighted content
-                st.markdown(f'<div class="source-content">{highlighted_text}</div>', unsafe_allow_html=True)
+    # Use the enhanced function from functions.py
+    functions.display_sources_with_highlights(source_documents, answer_text)
+
+# Then update the part that handles user input to use the improved source display
+# Inside the user input handling section, replace the part that displays sources:
+
+# Replace thinking animation with the answer
+
 
 # Streamlined application function
 def application():
@@ -463,8 +457,8 @@ def application():
                                 message_placeholder.markdown(f"<div class='user-name' style='color: orange;'>{assistant_name}</div>", unsafe_allow_html=True)
                                 message_placeholder.write(' ')
                                 message_placeholder.markdown(answer_only)
-                                
-                                # Display sources below the answer
+
+                                # Display sources below the answer with improved highlighting
                                 if source_docs:
                                     display_sources(source_docs, answer_only)
                             
