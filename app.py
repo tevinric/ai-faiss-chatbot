@@ -120,59 +120,47 @@ def get_retrieval_chain(bot_type_selected):
     if bot_type_selected in CHAIN_CACHE:
         return CHAIN_CACHE[bot_type_selected]
     
-    # Get cached vectorstore
+    # Get cached vectorstore and LLM
     vectorstore = get_vectorstore(bot_type_selected)
     if vectorstore is None:
         return None
     
-    # Get cached LLM
     llm = get_llm(0.2, bot_type_selected)
-    
-    # Get reranker configuration
     reranker_config = config.instantiate_reranker()
     
-    # Set up retriever with increased initial retrieval
+    # Set up retriever
     retriever = vectorstore.as_retriever(
-        search_kwargs={
-            "k": 15,  # Retrieve more documents initially for reranking
-            "fetch_k": 20
-        }
+        search_kwargs={"k": 15, "fetch_k": 20}
     )
     
-    # Create document chain with existing prompt
-    # Get the base prompt from config and combine with our source focus guidance
+    # Get prompts and create template
     base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
     combined_prompt = base_prompt + "\n\n" + balanced_prompt
     
-    # Create prompt template with balanced instructions
-    prompt_template = ChatPromptTemplate.from_messages(
-        [
-            ("system", combined_prompt), 
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{input}"),
-            ("human", "Here's relevant context from our knowledge base: {context}"),
-        ]
-    )
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", combined_prompt),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+        ("human", "Here's relevant context from our knowledge base: {context}")
+    ])
     
     # Create document chain
     document_chain = create_stuff_documents_chain(
-        llm=llm, 
+        llm=llm,
         prompt=prompt_template
     )
 
-    # Create the final chain that combines retrieval and generation
-    chain = {
-        "context": lambda x: retriever.get_relevant_documents(x["input"]),
-        "answer": lambda x: document_chain.invoke({
-            "context": x["context"],
-            "input": x["input"],
-            "chat_history": x.get("chat_history", [])
-        })["answer"]
-    } | RunnablePassthrough()
+    # Create retrieval chain using RunnablePassthrough
+    retrieval_chain = RunnablePassthrough.assign(
+        context=lambda x: retriever.get_relevant_documents(x["input"])
+    ) | {
+        "answer": lambda x: document_chain.invoke(x)["answer"],
+        "context": lambda x: x["context"]
+    }
     
-    # Cache the chain
-    CHAIN_CACHE[bot_type_selected] = chain
-    return chain
+    # Cache and return the chain
+    CHAIN_CACHE[bot_type_selected] = retrieval_chain
+    return retrieval_chain
 
 # Function to get a database connection
 def get_db_connection():
