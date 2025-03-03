@@ -115,7 +115,7 @@ def get_vectorstore(bot_type_selected):
         st.error(f"No vectorstore found at {load_path}. Please ensure the FAISS index has been created and saved.")
         return None
 
-# Update get_retrieval_chain function
+# Update the get_retrieval_chain function in app.py
 def get_retrieval_chain(bot_type_selected):
     """Get cached retrieval chain with reranking for specific bot type"""
     if bot_type_selected in CHAIN_CACHE:
@@ -141,19 +141,33 @@ def get_retrieval_chain(bot_type_selected):
         try:
             # Get relevant documents and ensure they are Document objects
             raw_docs = retriever.get_relevant_documents(input_dict["input"])
+            
+            # Debug to see what we're getting
+            logger.info(f"Raw docs type: {type(raw_docs)}")
+            if raw_docs and len(raw_docs) > 0:
+                logger.info(f"First doc type: {type(raw_docs[0])}")
+            
+            # Process documents more safely
             docs = []
             for doc in raw_docs:
                 if isinstance(doc, Document):
                     docs.append(doc)
+                elif hasattr(doc, 'page_content'):  # Sometimes objects have page_content but aren't Document class
+                    docs.append(Document(
+                        page_content=doc.page_content,
+                        metadata=getattr(doc, 'metadata', {"source": "Unknown"})
+                    ))
                 else:
-                    # Convert string docs to Document objects
+                    # Convert string or other types to Document objects
                     docs.append(Document(
                         page_content=str(doc),
                         metadata={"source": "Unknown"}
                     ))
             
-            # Format documents for the prompt
-            formatted_docs = "\n\n".join(doc.page_content for doc in docs)
+            # Format documents safely
+            formatted_docs = "\n\n".join(
+                getattr(doc, 'page_content', str(doc)) for doc in docs
+            )
             
             # Create the prompt template
             prompt = ChatPromptTemplate.from_messages([
@@ -176,14 +190,19 @@ def get_retrieval_chain(bot_type_selected):
                 "chat_history": input_dict.get("chat_history", [])
             })
             
+            # Make sure we return both answer and properly processed documents
             return {
                 "answer": response.content,
-                "context": docs  # Return the Document objects
+                "context": docs  # Return properly processed Document objects
             }
             
         except Exception as e:
             logger.error(f"Error in generate_response: {str(e)}")
-            raise e
+            # Return a failsafe response
+            return {
+                "answer": "I'm sorry, I encountered a technical issue processing your request. Please try again or rephrase your question.",
+                "context": []
+            }
 
     # Cache and return the chain
     CHAIN_CACHE[bot_type_selected] = generate_response
