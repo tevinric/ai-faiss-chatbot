@@ -22,6 +22,7 @@ from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from streamlit_modal import Modal  
 from langchain_core.runnables import RunnablePassthrough
+from langchain_core.documents import Document
 
 #from login_ui import login_ui
 import config
@@ -136,41 +137,53 @@ def get_retrieval_chain(bot_type_selected):
     base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
     combined_prompt = base_prompt + "\n\n" + balanced_prompt
     
-    # Create the chat prompt template with proper formatting
-    prompt_template = ChatPromptTemplate.from_messages([
-        ("system", combined_prompt),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        ("human", "Here are relevant documents: {context}")
-    ])
-
-    # Create document chain with formatted documents
-    def format_docs(docs):
-        # Safely grab page_content if available, otherwise use str(doc)
-        return "\n\n".join(doc.page_content if hasattr(doc, "page_content") else str(doc) for doc in docs)
-
-    # Create document chain
-    document_chain = create_stuff_documents_chain(
-        llm=llm,
-        prompt=prompt_template
-    )
-
     def generate_response(input_dict):
-        # Get relevant documents
-        docs = retriever.get_relevant_documents(input_dict["input"])
-        formatted_docs = format_docs(docs)
-        
-        # Generate response from the document chain
-        response = document_chain.invoke({
-            "context": formatted_docs,
-            "input": input_dict["input"],
-            "chat_history": input_dict.get("chat_history", [])
-        })
-        
-        return {
-            "answer": response.content,
-            "context": docs
-        }
+        try:
+            # Get relevant documents and ensure they are Document objects
+            raw_docs = retriever.get_relevant_documents(input_dict["input"])
+            docs = []
+            for doc in raw_docs:
+                if isinstance(doc, Document):
+                    docs.append(doc)
+                else:
+                    # Convert string docs to Document objects
+                    docs.append(Document(
+                        page_content=str(doc),
+                        metadata={"source": "Unknown"}
+                    ))
+            
+            # Format documents for the prompt
+            formatted_docs = "\n\n".join(doc.page_content for doc in docs)
+            
+            # Create the prompt template
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", combined_prompt),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{input}"),
+                ("human", "Here are relevant documents: {context}")
+            ])
+            
+            # Create and invoke the document chain
+            document_chain = create_stuff_documents_chain(
+                llm=llm,
+                prompt=prompt
+            )
+            
+            # Generate response
+            response = document_chain.invoke({
+                "context": formatted_docs,
+                "input": input_dict["input"],
+                "chat_history": input_dict.get("chat_history", [])
+            })
+            
+            return {
+                "answer": response.content,
+                "context": docs  # Return the Document objects
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in generate_response: {str(e)}")
+            raise e
 
     # Cache and return the chain
     CHAIN_CACHE[bot_type_selected] = generate_response
