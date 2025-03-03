@@ -225,36 +225,91 @@ def display_sources(source_documents, answer_text=""):
     if not source_documents:
         return
     
-    # Ensure all source_documents are Document objects
-    processed_docs = []
-    for doc in source_documents:
-        if isinstance(doc, Document):
-            processed_docs.append(doc)
-        elif isinstance(doc, str):
-            processed_docs.append(Document(
-                page_content=doc,
-                metadata={"source": "Unknown"}
-            ))
-        else:
-            logger.warning(f"Unexpected document type: {type(doc)}")
-            continue
-    
-    # Use the function to prepare source documents with highlighting
-    prepared_sources = functions.prepare_source_documents(processed_docs, answer_text)
-    
-    if prepared_sources:
-        st.markdown("### Source Documents")
-        st.markdown("*Information was drawn from these reference documents:*")
+    try:
+        # Debug information
+        logger.info(f"Source documents type: {type(source_documents)}")
+        if len(source_documents) > 0:
+            logger.info(f"First document type: {type(source_documents[0])}")
+            if hasattr(source_documents[0], 'page_content'):
+                logger.info(f"First document has page_content")
+            else:
+                logger.info(f"First document does NOT have page_content")
         
-        # Create an expander for each source
-        for source in prepared_sources:
-            with st.expander(source["title"], expanded=False):
-                # Get the highlighted text
-                highlighted_text = functions.render_highlighted_text(source["content"])
-                
-                # Display the highlighted content
-                st.markdown(f'<div class="source-content">{highlighted_text}</div>', 
-                          unsafe_allow_html=True)
+        # Ensure all source_documents are properly handled
+        processed_docs = []
+        for doc in source_documents:
+            if isinstance(doc, Document):
+                # Already a Document
+                processed_docs.append(doc)
+            elif hasattr(doc, 'page_content'):
+                # Has page_content but might not be Document class
+                processed_docs.append(Document(
+                    page_content=doc.page_content,
+                    metadata=getattr(doc, 'metadata', {"source": "Unknown"})
+                ))
+            elif isinstance(doc, str):
+                # String - convert to Document
+                processed_docs.append(Document(
+                    page_content=doc,
+                    metadata={"source": "Unknown"}
+                ))
+            elif isinstance(doc, dict) and "page_content" in doc:
+                # Dict with page_content
+                processed_docs.append(Document(
+                    page_content=doc["page_content"],
+                    metadata=doc.get("metadata", {"source": "Unknown"})
+                ))
+            else:
+                # Any other type - stringify
+                processed_docs.append(Document(
+                    page_content=str(doc),
+                    metadata={"source": "Unknown"}
+                ))
+                logger.warning(f"Converted unexpected document type: {type(doc)}")
+        
+        # Safeguard - modify prepare_source_documents call with a wrapper
+        def safe_prepare_source_documents(docs, answer):
+            try:
+                # Make one final check that all docs are proper Document objects
+                safe_docs = []
+                for d in docs:
+                    if not isinstance(d, Document) or not hasattr(d, 'page_content'):
+                        safe_docs.append(Document(
+                            page_content=str(d),
+                            metadata={"source": "Unknown"}
+                        ))
+                    else:
+                        safe_docs.append(d)
+                        
+                return functions.prepare_source_documents(safe_docs, answer)
+            except Exception as prep_error:
+                logger.error(f"Error in prepare_source_documents: {str(prep_error)}")
+                # Fall back to simple display
+                return [{"title": f"Source {i+1}", "content": str(d)} 
+                        for i, d in enumerate(docs)]
+        
+        # Use our safe wrapper
+        prepared_sources = safe_prepare_source_documents(processed_docs, answer_text)
+        
+        if prepared_sources:
+            st.markdown("### Source Documents")
+            st.markdown("*Information was drawn from these reference documents:*")
+            
+            # Create an expander for each source
+            for source in prepared_sources:
+                with st.expander(source["title"], expanded=False):
+                    # Get the highlighted text safely
+                    if isinstance(source["content"], dict) and "text" in source["content"]:
+                        highlighted_text = functions.render_highlighted_text(source["content"])
+                    else:
+                        highlighted_text = str(source["content"])
+                    
+                    # Display the highlighted content
+                    st.markdown(f'<div class="source-content">{highlighted_text}</div>', 
+                              unsafe_allow_html=True)
+    except Exception as e:
+        logger.error(f"Error displaying sources: {str(e)}")
+        st.warning("Source documents are available but couldn't be displayed properly.")
 
 # Streamlined application function
 def application():
