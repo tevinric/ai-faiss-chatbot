@@ -65,10 +65,12 @@ def instantiate_llm(temperature):
     return azure_llm
 
 #### RERANK FUNCTION
+# Add this to config.py
 
 def rerank_documents(documents, query, top_k=5):
     """
     Reranks a list of documents based on their relevance to the query using Azure's Cohere rerank model.
+    Preserves Document objects through the reranking process.
     
     Args:
         documents: List of Document objects to rerank
@@ -108,9 +110,19 @@ def rerank_documents(documents, query, top_k=5):
             logger.warning("AZURE_COHERE_RERANK_KEY is not set. Skipping reranking.")
             return documents[:top_k]
         
+        # Extract just the text content from documents for reranking
+        doc_contents = []
+        for doc in documents:
+            if hasattr(doc, 'page_content'):
+                doc_contents.append(doc.page_content)
+            else:
+                # If it's not a Document object, log warning and return original docs
+                logger.warning(f"Document object doesn't have page_content attribute: {type(doc)}")
+                return documents[:top_k]
+        
         # Prepare the payload for the Azure Cohere rerank API
         payload = {
-            "documents": [doc.page_content for doc in documents],
+            "documents": doc_contents,
             "query": query,
             "top_n": top_k,
             "model": AZURE_COHERE_RERANK_DEPLOYMENT
@@ -146,10 +158,13 @@ def rerank_documents(documents, query, top_k=5):
             # Extract the reranked indices
             if "results" in result_json and result_json["results"]:
                 # Extract indices and make sure they're valid
-                reranked_indices = [item["index"] for item in result_json["results"] 
-                                   if "index" in item and 0 <= item["index"] < len(documents)]
+                reranked_indices = []
+                for item in result_json["results"]:
+                    if "index" in item and 0 <= item["index"] < len(documents):
+                        reranked_indices.append(item["index"])
                 
                 # Reorder the documents based on the reranked indices
+                # We're using the original Document objects to preserve metadata and other attributes
                 reranked_documents = [documents[idx] for idx in reranked_indices]
                 
                 logger.info(f"Reranking successful. Returning {len(reranked_documents)} documents.")

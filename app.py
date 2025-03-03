@@ -93,8 +93,10 @@ def get_vectorstore(bot_type_selected):
         return None
 
 # Get retrieval chain with caching - updated for safe but accurate source focus
+# Update the get_retrieval_chain function in app.py
+
 def get_retrieval_chain(bot_type_selected):
-    """Get cached retrieval chain for specific bot type with accurate source representation"""
+    """Get cached retrieval chain for specific bot type with accurate source representation and reranking"""
     if bot_type_selected in CHAIN_CACHE:
         return CHAIN_CACHE[bot_type_selected]
     
@@ -144,19 +146,67 @@ Your goal is to be accurate, helpful, and transparent about where information co
             prompt_template,
         )
         
-        # Set up retriever with good default settings
+        # Set up retriever with increased number of chunks for initial retrieval
         retriever = vectorstore.as_retriever(
             search_kwargs={
-                "k": 5,        # Retrieve 5 chunks
-                "fetch_k": 10   # Consider 10 candidates
+                "k": 8,        # Retrieve 8 chunks for reranking
+                "fetch_k": 15   # Consider 15 candidates
             }
         )
-
-        # Use standard create_retrieval_chain without custom reranking
-        retrieval_chain = create_retrieval_chain(
-            retriever, 
-            document_chain
-        )
+        
+        # Create a modified retrieval chain that integrates reranking
+        from langchain.schema.runnable import RunnableParallel, RunnablePassthrough
+        
+        # First create a custom retriever function that includes reranking
+        def retrieve_with_reranking(query_str):
+            """Retrieve documents and apply reranking"""
+            try:
+                # Step 1: Get initial documents using FAISS
+                initial_docs = retriever.get_relevant_documents(query_str)
+                logger.info(f"Retrieved {len(initial_docs)} initial documents")
+                
+                if not initial_docs:
+                    logger.warning(f"No documents found for query: {query_str}")
+                    return []
+                
+                # Step 2: Apply reranking
+                try:
+                    reranked_docs = config.rerank_documents(initial_docs, query_str, top_k=5)
+                    logger.info(f"Reranking complete, got {len(reranked_docs)} reranked documents")
+                    return reranked_docs
+                except Exception as e:
+                    logger.error(f"Error during reranking: {str(e)}")
+                    # Fallback to original results
+                    return initial_docs[:5]
+            except Exception as e:
+                logger.error(f"Error in document retrieval: {str(e)}")
+                return []
+        
+        # Create the retrieval chain using the custom retriever
+        def retrieval_chain(inputs):
+            query = inputs["input"]
+            chat_history = inputs.get("chat_history", [])
+            
+            # Get reranked documents
+            docs = retrieve_with_reranking(query)
+            
+            # Format the documents into a single string for context
+            if docs:
+                formatted_docs = "\n\n".join(doc.page_content for doc in docs)
+            else:
+                formatted_docs = "No relevant documents found."
+            
+            # Pass everything to the document chain
+            output = document_chain.invoke({
+                "context": formatted_docs,
+                "input": query,
+                "chat_history": chat_history
+            })
+            
+            # Add source documents to the output
+            output["source_documents"] = docs
+            
+            return output
         
         # Cache the chain
         CHAIN_CACHE[bot_type_selected] = retrieval_chain
@@ -397,16 +447,16 @@ def application():
                         try:
                             # Generate response
                             with get_openai_callback() as cb:
-                                # Generate response
-                                result = retrieval_chain.invoke({
+                                # Generate response using our custom chain
+                                result = retrieval_chain({
                                     "input": processed_prompt,
                                     "chat_history": chat_history
                                 })
                                 
-                                # Get just the answer part 
-                                answer_only = result["answer"]
+                                # Get the answer part 
+                                answer_only = result["answer"] if "answer" in result else result.get("output", "I'm unable to generate a response at this time.")
                                 
-                                # Get source documents
+                                # Get source documents - this is now in a standard format
                                 source_docs = result.get("source_documents", [])
                                 
                                 # Replace thinking animation with the answer
@@ -473,7 +523,7 @@ def application():
                 logger.error(f"Error processing user input: {str(e)}")
                 st.error("An error occurred while processing your input. Please try again.")
                 return
-            
+                
     except Exception as e:
         print(e)
         logger.error(f"An error occurred: {str(e)}")
