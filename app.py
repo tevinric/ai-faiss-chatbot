@@ -21,6 +21,7 @@ from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from streamlit_modal import Modal  
+from langchain_core.runnables import RunnablePassthrough
 
 #from login_ui import login_ui
 import config
@@ -138,14 +139,6 @@ def get_retrieval_chain(bot_type_selected):
         }
     )
     
-    # Modify the retrieval chain to include reranking
-    def enhanced_retriever(query):
-        # Get initial documents
-        docs = retriever.get_relevant_documents(query)
-        # Rerank documents
-        reranked_docs = functions.rerank_documents(docs, query, reranker_config, k=5)
-        return reranked_docs
-    
     # Create document chain with existing prompt
     # Get the base prompt from config and combine with our source focus guidance
     base_prompt = config.llm_prompt_dictonary.get(bot_type_selected, "")
@@ -163,16 +156,23 @@ def get_retrieval_chain(bot_type_selected):
     
     # Create document chain
     document_chain = create_stuff_documents_chain(
-        llm, 
-        prompt_template,
+        llm=llm, 
+        prompt=prompt_template
     )
-    
-    # Create retrieval chain with enhanced retriever
-    retrieval_chain = create_retrieval_chain(enhanced_retriever, document_chain)
+
+    # Create the final chain that combines retrieval and generation
+    chain = {
+        "context": lambda x: retriever.get_relevant_documents(x["input"]),
+        "answer": lambda x: document_chain.invoke({
+            "context": x["context"],
+            "input": x["input"],
+            "chat_history": x.get("chat_history", [])
+        })["answer"]
+    } | RunnablePassthrough()
     
     # Cache the chain
-    CHAIN_CACHE[bot_type_selected] = retrieval_chain
-    return retrieval_chain
+    CHAIN_CACHE[bot_type_selected] = chain
+    return chain
 
 # Function to get a database connection
 def get_db_connection():
