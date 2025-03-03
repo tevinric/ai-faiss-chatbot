@@ -1,0 +1,6 @@
+/.venv
+/runnables
+/assets
+/downloadables
+/faiss_index
+/__pycache__
