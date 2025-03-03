@@ -143,29 +143,37 @@ def get_retrieval_chain(bot_type_selected):
         ("human", "{input}"),
         ("human", "Here are relevant documents: {context}")
     ])
-    
+
     # Create document chain with formatted documents
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
-    
-    # Create the complete chain
-    chain = (
-        {
-            "context": lambda x: retriever.get_relevant_documents(x["input"]),
-            "input": lambda x: x["input"],
-            "chat_history": lambda x: x.get("chat_history", [])
-        } 
-        | RunnablePassthrough.assign(
-            context=lambda x: format_docs(x["context"])
-        )
-        | prompt_template
-        | llm
-        | {"answer": lambda x: x.content, "context": lambda x: x["context"]}
+
+    # Create document chain
+    document_chain = create_stuff_documents_chain(
+        llm=llm,
+        prompt=prompt_template
     )
-    
+
+    def generate_response(input_dict):
+        # Get relevant documents
+        docs = retriever.get_relevant_documents(input_dict["input"])
+        formatted_docs = format_docs(docs)
+        
+        # Generate response
+        response = document_chain.invoke({
+            "context": formatted_docs,
+            "input": input_dict["input"],
+            "chat_history": input_dict.get("chat_history", [])
+        })
+        
+        return {
+            "answer": response.content,
+            "context": docs
+        }
+
     # Cache and return the chain
-    CHAIN_CACHE[bot_type_selected] = chain
-    return chain
+    CHAIN_CACHE[bot_type_selected] = generate_response
+    return generate_response
 
 # Function to get a database connection
 def get_db_connection():
@@ -391,15 +399,15 @@ def application():
                     try:
                         # Generate response
                         with get_openai_callback() as cb:
-                            # Generate response using invoke
-                            result = retrieval_chain.invoke({
+                            # Generate response using the chain
+                            result = retrieval_chain({
                                 "input": processed_prompt,
                                 "chat_history": chat_history
                             })
                             
                             # Extract answer and source documents
-                            answer_only = result["answer"] if isinstance(result, dict) else str(result)
-                            source_docs = retriever.get_relevant_documents(processed_prompt)
+                            answer_only = result["answer"]
+                            source_docs = result["context"]
                             
                             # Replace thinking animation with the answer
                             message_placeholder.markdown(
