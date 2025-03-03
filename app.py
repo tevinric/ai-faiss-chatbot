@@ -55,6 +55,27 @@ MODEL_CACHE = {}
 VECTORSTORE_CACHE = {}
 CHAIN_CACHE = {}
 
+# Define balanced prompt for source handling
+balanced_prompt = """
+IMPORTANT SOURCE HANDLING INSTRUCTIONS:
+1. Base responses PRIMARILY on the provided reference content
+2. When possible, use DIRECT QUOTES or close paraphrasing from sources
+3. Do not invent or assume information not present in sources
+4. If sources don't contain needed information, clearly state this limitation
+5. Maintain original meaning without significant alterations
+6. Prioritize accuracy over comprehensiveness 
+7. If sources seem contradictory, acknowledge this
+8. For technical details, use EXACT wording from sources
+9. Synthesize information from multiple sources when relevant
+10. Cite specific sources when providing key information
+
+FORMAT RESPONSES AS FOLLOWS:
+- Start with direct answer to question
+- Support with relevant quotes/evidence from sources
+- Acknowledge limitations or uncertainties
+- Keep tone professional but conversational
+"""
+
 # Cache the common resources with longer TTL
 @st.cache_resource(ttl=24*3600)  # Cache for 24 hours
 def get_embeddings():
