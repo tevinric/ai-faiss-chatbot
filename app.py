@@ -152,13 +152,25 @@ def get_retrieval_chain(bot_type_selected):
             for doc in raw_docs:
                 if isinstance(doc, Document):
                     docs.append(doc)
+                elif isinstance(doc, dict) and "page_content" in doc:
+                    # Convert dict with page_content to Document object
+                    docs.append(Document(
+                        page_content=doc["page_content"],
+                        metadata=doc.get("metadata", {"source": "Unknown"})
+                    ))
                 elif hasattr(doc, 'page_content'):  # Sometimes objects have page_content but aren't Document class
                     docs.append(Document(
                         page_content=doc.page_content,
                         metadata=getattr(doc, 'metadata', {"source": "Unknown"})
                     ))
+                elif isinstance(doc, str):
+                    # Convert string to Document objects
+                    docs.append(Document(
+                        page_content=doc,
+                        metadata={"source": "Unknown"}
+                    ))
                 else:
-                    # Convert string or other types to Document objects
+                    # Convert other types to Document objects
                     docs.append(Document(
                         page_content=str(doc),
                         metadata={"source": "Unknown"}
@@ -192,7 +204,7 @@ def get_retrieval_chain(bot_type_selected):
             
             # Make sure we return both answer and properly processed documents
             return {
-                "answer": response.content,
+                "answer": response.content if hasattr(response, 'content') else str(response),
                 "context": docs  # Return properly processed Document objects
             }
             
@@ -241,6 +253,12 @@ def display_sources(source_documents, answer_text=""):
             if isinstance(doc, Document):
                 # Already a Document
                 processed_docs.append(doc)
+            elif isinstance(doc, dict) and "page_content" in doc:
+                # Dict with page_content
+                processed_docs.append(Document(
+                    page_content=doc["page_content"],
+                    metadata=doc.get("metadata", {"source": "Unknown"})
+                ))
             elif hasattr(doc, 'page_content'):
                 # Has page_content but might not be Document class
                 processed_docs.append(Document(
@@ -252,12 +270,6 @@ def display_sources(source_documents, answer_text=""):
                 processed_docs.append(Document(
                     page_content=doc,
                     metadata={"source": "Unknown"}
-                ))
-            elif isinstance(doc, dict) and "page_content" in doc:
-                # Dict with page_content
-                processed_docs.append(Document(
-                    page_content=doc["page_content"],
-                    metadata=doc.get("metadata", {"source": "Unknown"})
                 ))
             else:
                 # Any other type - stringify
@@ -285,7 +297,7 @@ def display_sources(source_documents, answer_text=""):
             except Exception as prep_error:
                 logger.error(f"Error in prepare_source_documents: {str(prep_error)}")
                 # Fall back to simple display
-                return [{"title": f"Source {i+1}", "content": str(d)} 
+                return [{"title": f"Source {i+1}", "content": getattr(d, 'page_content', str(d))} 
                         for i, d in enumerate(docs)]
         
         # Use our safe wrapper
