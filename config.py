@@ -2,6 +2,7 @@
 
 ## BASE IMPORTS
 import os
+import requests  # Add this import for making HTTP requests to the rerank API
 from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
 import pyodbc
 import streamlit as st
@@ -26,6 +27,11 @@ SQL_SERVER = os.environ.get("SQL_SERVER")
 SQL_DATABASE = os.environ.get("SQL_DATABASE")
 SQL_USERNAME = os.environ.get("SQL_USERNAME")
 SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
+
+## COHERE RERANK MODEL
+AZURE_COHERE_RERANK_KEY = os.environ.get("AZURE_COHERE_RERANK_KEY")
+AZURE_COHERE_RERANK_ENDPOINT = os.environ.get("AZURE_COHERE_RERANK_ENDPOINT")
+AZURE_COHERE_RERANK_DEPLOYMENT = os.environ.get("AZURE_COHERE_RERANK_DEPLOYMENT", "cohere-rerank-3.5")
 
 #APP OPTIONS
 bot_options = [
@@ -58,6 +64,59 @@ def instantiate_llm(temperature):
     )
     return azure_llm
 
+#### RERANK FUNCTION
+def rerank_documents(documents, query, top_k=5):
+    """
+    Reranks a list of documents based on their relevance to the query using Azure's Cohere rerank model.
+    
+    Args:
+        documents: List of Document objects to rerank
+        query: User query string
+        top_k: Number of documents to return after reranking
+        
+    Returns:
+        A list of reranked Document objects
+    """
+    if not documents:
+        return []
+    
+    try:
+        # Prepare the payload for the Azure Cohere rerank API
+        payload = {
+            "documents": [doc.page_content for doc in documents],
+            "query": query,
+            "top_n": min(top_k, len(documents)),
+            "model": AZURE_COHERE_RERANK_DEPLOYMENT
+        }
+        
+        # Set up the headers with the API key
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": AZURE_COHERE_RERANK_KEY,
+        }
+        
+        # Make the API call to the Azure Cohere rerank endpoint
+        response = requests.post(
+            f"{AZURE_COHERE_RERANK_ENDPOINT}/rerank",
+            headers=headers,
+            json=payload
+        )
+        
+        # Check if the request was successful
+        response.raise_for_status()
+        result = response.json()
+        
+        # Get the reranked indices and relevance scores
+        reranked_indices = [item["index"] for item in result["results"]]
+        
+        # Reorder the documents based on the reranked indices
+        reranked_documents = [documents[idx] for idx in reranked_indices]
+        
+        return reranked_documents
+    except Exception as e:
+        print(f"Error during reranking: {str(e)}")
+        # Fallback to original documents if reranking fails
+        return documents[:top_k]
 
 #### LLM HYPERPARAMETERS
 

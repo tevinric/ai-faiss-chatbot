@@ -20,7 +20,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
-from streamlit_modal import Modal  
+from streamlit_modal import Modal
+from langchain.schema.runnable import RunnablePassthrough
 
 #from login_ui import login_ui
 import config
@@ -94,7 +95,7 @@ def get_vectorstore(bot_type_selected):
 
 # Get retrieval chain with caching - updated for safe but accurate source focus
 def get_retrieval_chain(bot_type_selected):
-    """Get cached retrieval chain for specific bot type with accurate source representation"""
+    """Get cached retrieval chain for specific bot type with accurate source representation and reranking"""
     if bot_type_selected in CHAIN_CACHE:
         return CHAIN_CACHE[bot_type_selected]
     
@@ -142,16 +143,33 @@ Your goal is to be accurate, helpful, and transparent about where information co
         prompt_template,
     )
     
-    # Set up retriever with increased number of chunks
+    # Set up retriever with increased number of chunks for initial retrieval
     retriever = vectorstore.as_retriever(
         search_kwargs={
-            "k": 5,        # Retrieve more chunks
-            "fetch_k": 10   # Consider more candidates
+            "k": 10,       # Retrieve more chunks for reranking
+            "fetch_k": 20  # Consider more candidates
         }
     )
 
-    # Set up retrieval chain
-    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    # Create a custom retrieval function with reranking
+    def retrieve_and_rerank(query):
+        # First get documents using the standard FAISS retriever
+        initial_docs = retriever.get_relevant_documents(query)
+        
+        # Apply reranking to these documents
+        reranked_docs = config.rerank_documents(initial_docs, query, top_k=5)
+        
+        return reranked_docs
+
+    # Create a custom retrieval chain that uses our reranking function
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+    
+    retrieval_chain = {
+        "context": lambda x: format_docs(retrieve_and_rerank(x["input"])),
+        "input": lambda x: x["input"],
+        "chat_history": lambda x: x.get("chat_history", [])
+    } | RunnablePassthrough() | document_chain
     
     # Cache the chain
     CHAIN_CACHE[bot_type_selected] = retrieval_chain
